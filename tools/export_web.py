@@ -5,6 +5,8 @@
   change_rfiaware.json, change_leak_143_A_025.json; data/change_kakhovka_<трек>_rfiaware.npz.
 Пише:
   web/layers/<трек>/<дата>_raw.png, <дата>_clean.png — HH, 160 м, Web Mercator, сірий −22…−2 дБ;
+  web/layers/<трек>/<дата>_hv_raw.png, <дата>_hv_clean.png … — те саме для HV, сірий −30…−10 дБ
+    (шкала фіксована для всіх дат; HV слабший за HH на ~10 дБ, тому та сама перешкода його перекриває сильніше);
   web/layers/<трек>/change.png — дата першої зміни (палітра в app.json);
   web/layers/agree.png — зміна в обох треках з датами в межах ±12 діб;
   web/data/app.json — кути зображень (lon/lat), дати, палітри, усі числа для графіків.
@@ -34,6 +36,7 @@ WEB = PROJECT / 'web'
 TRACKS = {'143_A_025': 'висхідний, ~02:39 UTC', '108_D_065': 'низхідний, ~16:46 UTC'}
 LOOKS = 2
 VMIN, VMAX = -22.0, -2.0
+GRAY = {'hh': (VMIN, VMAX), 'hv': (-30.0, -10.0)}   # фіксовані шкали сірого, однакові для всіх дат і для сирих/очищених
 # дата першої зміни: послідовна шкала сезону (червень → листопад), однакова для обох треків за днем року
 SEASON = [(172, '#5b3fd1'), (195, '#8a3fc4'), (218, '#c23f9e'), (241, '#e8606f'), (264, '#f88f45'), (287, '#fbbf2f'), (310, '#f4e44a')]
 
@@ -68,8 +71,9 @@ def corners(dst):
     return [[round(a, 6), round(b, 6)] for a, b in zip(lon, lat)]
 
 
-def save_gray(db, path):
-    v = np.clip((db - VMIN) / (VMAX - VMIN), 0, 1)
+def save_gray(db, path, rng=(VMIN, VMAX)):
+    lo, hi = rng
+    v = np.clip((db - lo) / (hi - lo), 0, 1)
     g = np.nan_to_num(v * 255).astype('u1'); a = np.where(np.isfinite(db), 255, 0).astype('u1')
     Image.fromarray(np.dstack([g, a]), 'LA').save(path, optimize=True)
 
@@ -79,10 +83,11 @@ TINT = [(0.0, (255, 214, 102)), (0.45, (250, 140, 50)), (0.75, (235, 64, 52)), (
 CLASS_STATS = {}
 
 
-def save_tinted(db, ratio, path):
-    """Сирий HH сірим + тепле тонування осередків перешкоди.
+def save_tinted(db, ratio, path, rng=(VMIN, VMAX)):
+    """Сирий знімок сірим + тепле тонування осередків перешкоди.
     ratio = R / сигнал (згладжений): колір з'являється від ×1, повний — від ×16 (логарифмічно)."""
-    g = np.nan_to_num(np.clip((db - VMIN) / (VMAX - VMIN), 0, 1))
+    lo, hi = rng
+    g = np.nan_to_num(np.clip((db - lo) / (hi - lo), 0, 1))
     lr = np.log2(np.maximum(np.nan_to_num(ratio), 1e-3))
     u = np.clip(lr / 4.0, 0, 1)                                     # ×1 → 0, ×16 → 1
     a = np.clip(lr / 1.5, 0, 1) * (0.55 + 0.45 * u)                  # плавний вхід від ×1 до ×2.8
@@ -154,7 +159,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     import warnings; warnings.filterwarnings('ignore', category=RuntimeWarning)
     app = {'generated': datetime.now().strftime('%Y-%m-%d %H:%M'), 'tracks': {}, 'season_palette': SEASON,
-           'gray_range_db': [VMIN, VMAX]}
+           'gray_range_db': [VMIN, VMAX], 'gray_range_db_pol': {p: list(r) for p, r in GRAY.items()}}
     dst_common, doy_maps, chg_maps = None, {}, {}
     sys.path.insert(0, str(PROJECT / 'tools'))
     Z = np.load(D / 'clean_stack_freqB.npz')
@@ -165,35 +170,39 @@ def main():
         crs = f"EPSG:{int(raw['epsg'])}"
         x, y = raw['x'], raw['y']
         src_tf = from_origin(x[0] - 40, y[0] + 40, 80 * LOOKS, 80 * LOOKS)
-        rawml = st.multilook(raw['hh'], LOOKS); clml = st.multilook(cl['hh'], LOOKS)
-        Rml = st.multilook(Z[f'{t}_hh_R'].astype('f4'), LOOKS)
-        sig = np.nanmedian(clml, 0)                     # сигнал поверхні: багатодатна медіана очищеної потужності
         from scipy.ndimage import gaussian_filter, uniform_filter
-        w_ = np.isfinite(sig).astype('f4')
-        sig_s = gaussian_filter(np.nan_to_num(sig), 6) / np.maximum(gaussian_filter(w_, 6), 1e-3)
-        files = []
-        for i, d in enumerate(dates):
-            fin = np.isfinite(rawml[i])
-            # 1) сирий знімок із тонуванням: частка перешкоди в спостереженій потужності R / Y
-            db = np.where(fin, 10 * np.log10(np.maximum(rawml[i], 1e-6)), np.nan)
-            # сила перешкоди відносно згладженого (~1 км) сигналу поверхні: тонування за осередками, не за окремими полями
-            rs = np.where(fin, Rml[i] / np.maximum(sig_s, 1e-9), np.nan)
-            wdb, dst_common = warp(db, src_tf, crs, Resampling.bilinear, dst_common)
-            wrs, _ = warp(rs, src_tf, crs, Resampling.bilinear, dst_common)
-            save_tinted(wdb, wrs, out / f'{d}_rawrfi.png')
-            save_gray(wdb, out / f'{d}_raw.png')          # оригінальний знімок без підсвітки
-            # 2) очищений знімок
-            dbc = np.where(fin, 10 * np.log10(np.maximum(clml[i], 1e-6)), np.nan)
-            wdc, _ = warp(dbc, src_tf, crs, Resampling.bilinear, dst_common)
-            save_gray(wdc, out / f'{d}_clean.png')
-            # 3) маска пошкоджених даних: перешкода в k разів сильніша за сигнал
-            ratio = np.where(fin, uniform_filter(np.nan_to_num(Rml[i] / np.maximum(sig, 1e-9)), 3), np.nan)
-            lvl = np.select([ratio > RATIO_BAD, ratio > RATIO_DEGRADED], [2, 1], 0).astype('f4'); lvl[~fin] = np.nan
-            wl, _ = warp(lvl, src_tf, crs, Resampling.nearest, dst_common)
-            save_hatch(wl, out / f'{d}_mask.png')
-            files.append({'date': d, 'raw': f'layers/{t}/{d}_raw.png', 'rawrfi': f'layers/{t}/{d}_rawrfi.png', 'clean': f'layers/{t}/{d}_clean.png',
-                          'mask': f'layers/{t}/{d}_mask.png',
-                          'degraded': round(100 * float((lvl[fin] == 1).mean()), 1), 'bad': round(100 * float((lvl[fin] == 2).mean()), 1)})
+        files = [{'date': d} for d in dates]
+        for pol in ('hh', 'hv'):
+            rawml = st.multilook(raw[pol], LOOKS); clml = st.multilook(cl[pol], LOOKS)
+            Rml = st.multilook(Z[f'{t}_{pol}_R'].astype('f4'), LOOKS)
+            sig = np.nanmedian(clml, 0)                     # сигнал поверхні: багатодатна медіана очищеної потужності
+            w_ = np.isfinite(sig).astype('f4')
+            sig_s = gaussian_filter(np.nan_to_num(sig), 6) / np.maximum(gaussian_filter(w_, 6), 1e-3)
+            rng, pre = GRAY[pol], ('' if pol == 'hh' else 'hv_')   # імена HH-шарів лишаються як були
+            for i, d in enumerate(dates):
+                fin = np.isfinite(rawml[i])
+                # 1) сирий знімок із тонуванням: частка перешкоди в спостереженій потужності R / Y
+                db = np.where(fin, 10 * np.log10(np.maximum(rawml[i], 1e-6)), np.nan)
+                # сила перешкоди відносно згладженого (~1 км) сигналу поверхні: тонування за осередками, не за окремими полями
+                rs = np.where(fin, Rml[i] / np.maximum(sig_s, 1e-9), np.nan)
+                wdb, dst_common = warp(db, src_tf, crs, Resampling.bilinear, dst_common)
+                wrs, _ = warp(rs, src_tf, crs, Resampling.bilinear, dst_common)
+                save_tinted(wdb, wrs, out / f'{d}_{pre}rawrfi.png', rng)
+                save_gray(wdb, out / f'{d}_{pre}raw.png', rng)          # оригінальний знімок без підсвітки
+                # 2) очищений знімок
+                dbc = np.where(fin, 10 * np.log10(np.maximum(clml[i], 1e-6)), np.nan)
+                wdc, _ = warp(dbc, src_tf, crs, Resampling.bilinear, dst_common)
+                save_gray(wdc, out / f'{d}_{pre}clean.png', rng)
+                # 3) маска пошкоджених даних: перешкода в k разів сильніша за сигнал
+                ratio = np.where(fin, uniform_filter(np.nan_to_num(Rml[i] / np.maximum(sig, 1e-9)), 3), np.nan)
+                lvl = np.select([ratio > RATIO_BAD, ratio > RATIO_DEGRADED], [2, 1], 0).astype('f4'); lvl[~fin] = np.nan
+                wl, _ = warp(lvl, src_tf, crs, Resampling.nearest, dst_common)
+                save_hatch(wl, out / f'{d}_{pre}mask.png')
+                rec = {'raw': f'layers/{t}/{d}_{pre}raw.png', 'rawrfi': f'layers/{t}/{d}_{pre}rawrfi.png',
+                       'clean': f'layers/{t}/{d}_{pre}clean.png', 'mask': f'layers/{t}/{d}_{pre}mask.png',
+                       'degraded': round(100 * float((lvl[fin] == 1).mean()), 1), 'bad': round(100 * float((lvl[fin] == 2).mean()), 1)}
+                if pol == 'hh': files[i].update(rec)                    # HH на верхньому рівні, як раніше
+                else: files[i]['hv'] = rec
         CLASS_STATS[t] = class_stats(raw, cl, Z, t, dates)
         ch = np.load(PROJECT / 'data' / f'change_kakhovka_{t}_rfiaware.npz')
         doy = np.array(doy_of(dates), 'f4')[ch['first']]
