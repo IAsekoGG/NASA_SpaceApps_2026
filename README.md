@@ -3,7 +3,7 @@
 NISAR L-band monitoring of the former Kakhovka Reservoir (Ukraine), June–November 2026, under strong radio-frequency interference (RFI).
 NASA Space Apps Challenge 2026.
 
-**Live web app:** https://kakhovka.mriiacraft.pp.ua (mirror: https://znai-dev.github.io/NASA_Space_Apps_2026/)
+**Live web app:** https://kakhovka.mriiacraft.pp.ua (mirror: https://iasekogg.github.io/NASA_SpaceApps_2026/)
 
 **Problem.** NISAR L2 GCOV frames over the area (tracks 143 A and 108 D, 22 acquisitions) are contaminated by RFI: smooth blobs 30–60 km across that move between dates and raise the noise floor by 10–30 dB. A standard multitemporal change test on the raw stack flags **98 %** of the area as changed — it maps interference, not the surface.
 
