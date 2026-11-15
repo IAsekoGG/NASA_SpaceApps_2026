@@ -1,5 +1,5 @@
-import { barChart, lineChart, strip } from './charts.js?v=202611152008';
-import { STR, fmt } from './i18n.js?v=202611152008';
+import { barChart, lineChart, strip } from './charts.js?v=202611152230';
+import { STR, fmt } from './i18n.js?v=202611152230';
 
 const C = { clean: '#3987e5', raw: '#d95926', naive: '#199e70', base: '#5f5e58' };
 const TRACK_NAME = { '143_A_025': '143 A', '108_D_065': '108 D' };
@@ -11,7 +11,7 @@ const ddmm = d => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
 const sgn = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
 const num = v => String(v);
 
-const state = { lang: 'en', mode: 'compare', track: '143_A_025', date: null, base: 'dark', opacity: 1, swipe: 0.5, rfi: false,
+const state = { lang: 'en', mode: 'compare', track: '143_A_025', date: null, base: 'dark', opacity: 1, swipe: 0.5, rfi: false, mapPol: 'hv',
   chartTrack: '143_A_025', pol: 'hv', classTrack: '143_A_025', classPol: 'hh' };
 let APP, mapA, mapB;
 const T = (k, v) => fmt(STR[state.lang][k] ?? k, v);
@@ -20,7 +20,6 @@ const T = (k, v) => fmt(STR[state.lang][k] ?? k, v);
 function applyLang() {
   document.documentElement.lang = state.lang;
   document.querySelectorAll('[data-i18n]').forEach(e => { e.textContent = T(e.dataset.i18n); });
-  $('#limitsList').innerHTML = STR[state.lang].limits.map(x => `<li>${x}</li>`).join('');
   $('#loading').textContent = T('loading');
   if (APP) { buildTrackSegs(); figures(); charts(); classes(); renderLegend(); }
 }
@@ -44,6 +43,8 @@ function bindSeg(root, onPick) {
 function buildTrackSegs() {
   const items = Object.keys(APP.tracks).map(t => ({ v: t, label: TRACK_NAME[t], sub: T(`trk_${t}`) }));
   seg($('#trackSeg'), items, state.track, v => { state.track = v; buildDates(); render(); });
+  seg($('#mapPol'), ['hh', 'hv'].map(p => ({ v: p, label: p.toUpperCase(), sub: T(`pol_${p}`) })), state.mapPol,
+    v => { state.mapPol = v; buildDates(); render(); });
   const short = items.map(i => ({ v: i.v, label: i.label }));
   seg($('#chartTrack'), short, state.chartTrack, v => { state.chartTrack = v; trackCharts(); });
   seg($('#classTrack'), short, state.classTrack, v => { state.classTrack = v; classes(); });
@@ -93,7 +94,10 @@ async function setImage(map, id, url, opacity, gen, nearest = false) {
   return true;
 }
 function drop(map, id) { if (map.getLayer(id)) map.removeLayer(id); if (map.getSource(id)) map.removeSource(id); }
-const img = () => APP.tracks[state.track].images.find(x => x.date === state.date);
+// Шари обраної поляризації: HH лежать на верхньому рівні запису дати, HV — у полі hv.
+const pick = I => (I && state.mapPol === 'hv' && I.hv ? { date: I.date, ...I.hv } : I);
+const img = () => pick(APP.tracks[state.track].images.find(x => x.date === state.date));
+const grayRange = () => (APP.gray_range_db_pol || {})[state.mapPol] || APP.gray_range_db;
 
 async function render() {
   const TR = APP.tracks[state.track];
@@ -117,7 +121,7 @@ async function render() {
     // фоном готуємо обидва варіанти поточної дати й сусідні дати, щоб перемикання було миттєвим
     [I.raw, I.rawrfi, I.mask].forEach(preload);
     const i = TR.dates.indexOf(state.date);
-    [-1, 1].forEach(k => { const n = TR.images[i + k]; if (n) [state.rfi ? n.rawrfi : n.raw, n.clean, state.rfi ? n.mask : null].filter(Boolean).forEach(preload); });
+    [-1, 1].forEach(k => { const n = pick(TR.images[i + k]); if (n) [state.rfi ? n.rawrfi : n.raw, n.clean, state.rfi ? n.mask : null].filter(Boolean).forEach(preload); });
   } else {
     drop(mapB, 'mask');
     await Promise.all([setImage(mapA, 'sar', I.clean, state.opacity * 0.55, gen), setImage(mapA, 'chg', state.mode === 'change' ? TR.change : APP.agree, 1, gen, true)]);
@@ -144,10 +148,11 @@ function renderLegend() {
   $('#quality').innerHTML = I ? T('quality', { bad: num(I.bad), deg: num(I.degraded) }) : '';
   $('#quality').style.display = state.mode === 'compare' ? '' : 'none';
   if (state.mode === 'compare') {
-    const gray = 'linear-gradient(90deg,#000,#fff)', gt = [`${APP.gray_range_db[0]}`, `${APP.gray_range_db[1]}`];
-    block(T('lg_raw_plain'), gray, gt);
+    const gr = grayRange(), pol = state.mapPol.toUpperCase();
+    const gray = 'linear-gradient(90deg,#000,#fff)', gt = [`${gr[0]}`, `${gr[1]}`];
+    block(T('lg_raw_plain', { pol }), gray, gt);
     if (state.rfi) block(T('lg_raw'), RFI_RAMP, ['×1', '×4', '×16']);
-    block(T('lg_clean'), gray, gt);
+    block(T('lg_clean', { pol }), gray, gt);
     if (state.rfi) { row('deg', T('lg_deg')); row('bad', T('lg_bad')); }
   } else {
     const pal = APP.season_palette, lo = MONTH_DOY[0], hi = 334;
@@ -166,7 +171,7 @@ function renderLegend() {
 
 function buildDates() {
   const TR = APP.tracks[state.track], root = $('#dates'); root.replaceChildren();
-  TR.images.forEach(I => {
+  TR.images.map(pick).forEach(I => {
     const b = document.createElement('button'); b.dataset.v = I.date; b.textContent = ddmm(I.date);
     const bar = document.createElement('i'); bar.style.width = `${Math.min(100, (I.bad + 0.5 * I.degraded) * 2.5)}%`; b.appendChild(bar);
     b.title = `${I.date}: ${I.bad} % / ${I.degraded} %`;
@@ -354,7 +359,6 @@ function classes() {
 async function main() {
   applyLang();
   APP = await (await fetch('data/app.json')).json();
-  $('#generated').textContent = APP.generated;
   buildTrackSegs();
   bindSeg($('#chartPol'), v => { state.pol = v; trackCharts(); });
   bindSeg($('#classPol'), v => { state.classPol = v; classes(); });
